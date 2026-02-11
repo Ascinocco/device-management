@@ -1,0 +1,15 @@
+services:
+  postgres_device_service_py:
+    image: postgres:16
+    container_name: device_service_postgres_py
+    environment:
+      POSTGRES_DB: device_service
+      POSTGRES_USER: device_service
+      POSTGRES_PASSWORD: device_service
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_device_service_py:/var/lib/postgresql/data
+
+volumes:
+  pgdata_device_service_py:

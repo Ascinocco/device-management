@@ -1,0 +1,108 @@
+services:
+  # ── Databases ──────────────────────────────────────────────────
+  postgres_device:
+    image: postgres:16
+    container_name: device_service_postgres
+    environment:
+      POSTGRES_DB: device_service
+      POSTGRES_USER: device_service
+      POSTGRES_PASSWORD: device_service
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_device:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U device_service"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres_tenancy:
+    image: postgres:16
+    container_name: tenancy_service_postgres
+    environment:
+      POSTGRES_DB: tenancy_service
+      POSTGRES_USER: tenancy_service
+      POSTGRES_PASSWORD: tenancy_service
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata_tenancy:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tenancy_service"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Services ───────────────────────────────────────────────────
+  device-service:
+    build: ./device-service
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://device_service:device_service@postgres_device:5432/device_service
+      DEVICE_SERVICE_TOKEN: ${DEVICE_SERVICE_TOKEN}
+    depends_on:
+      postgres_device:
+        condition: service_healthy
+
+  device-worker:
+    build: ./device-worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://device_service:device_service@postgres_device:5432/device_service
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_FROM: ${RESEND_FROM}
+      TENANCY_SERVICE_URL: http://tenancy-service:5001
+      TENANCY_SERVICE_TOKEN: ${TENANCY_SERVICE_TOKEN}
+      DEVICE_SERVICE_URL: http://device-service:8000
+      DEVICE_SERVICE_TOKEN: ${DEVICE_SERVICE_TOKEN}
+      POLL_INTERVAL_SECONDS: 5
+    depends_on:
+      postgres_device:
+        condition: service_healthy
+      device-service:
+        condition: service_started
+
+  tenancy-service:
+    build: ./tenancy-service
+    ports:
+      - "5001:5001"
+    environment:
+      DATABASE_URL: postgres://tenancy_service:tenancy_service@postgres_tenancy:5432/tenancy_service
+      TENANCY_SERVICE_TOKEN: ${TENANCY_SERVICE_TOKEN}
+      PORT: "5001"
+    depends_on:
+      postgres_tenancy:
+        condition: service_healthy
+
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: "4000"
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      CLERK_JWT_ISSUER: ${CLERK_JWT_ISSUER}
+      TENANCY_SERVICE_URL: http://tenancy-service:5001
+      TENANCY_SERVICE_TOKEN: ${TENANCY_SERVICE_TOKEN}
+      DEVICE_SERVICE_URL: http://device-service:8000
+      DEVICE_SERVICE_TOKEN: ${DEVICE_SERVICE_TOKEN}
+    depends_on:
+      - device-service
+      - tenancy-service
+
+  # ── UI ─────────────────────────────────────────────────────────
+  device-ui:
+    build:
+      context: ./device-ui
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        VITE_API_URL: http://localhost:4000
+    ports:
+      - "5173:80"
+    depends_on:
+      - api-gateway
+
+volumes:
+  pgdata_device:
+  pgdata_tenancy:
