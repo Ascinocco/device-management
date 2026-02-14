@@ -1,16 +1,11 @@
-import enum
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, String, UniqueConstraint, Index, Integer, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.devices import DeviceStatus
 from infra.db.base import Base
-
-
-class DeviceStatus(str, enum.Enum):
-    ACTIVE = "active"
-    RETIRED = "retired"
 
 
 class DeviceModel(Base):

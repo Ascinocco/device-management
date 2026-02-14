@@ -45,6 +45,12 @@ services:
     depends_on:
       postgres_device:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   device-worker:
     build: ./device-worker
@@ -61,7 +67,9 @@ services:
       postgres_device:
         condition: service_healthy
       device-service:
-        condition: service_started
+        condition: service_healthy
+      tenancy-service:
+        condition: service_healthy
 
   tenancy-service:
     build: ./tenancy-service
@@ -74,6 +82,12 @@ services:
     depends_on:
       postgres_tenancy:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5001/internal/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   api-gateway:
     build: ./api-gateway
@@ -88,8 +102,10 @@ services:
       DEVICE_SERVICE_URL: http://device-service:8000
       DEVICE_SERVICE_TOKEN: ${DEVICE_SERVICE_TOKEN}
     depends_on:
-      - device-service
-      - tenancy-service
+      device-service:
+        condition: service_healthy
+      tenancy-service:
+        condition: service_healthy
 
   # ── UI ─────────────────────────────────────────────────────────
   device-ui:
@@ -101,7 +117,8 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      - api-gateway
+      api-gateway:
+        condition: service_started
 
 volumes:
   pgdata_device:

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from app.contracts import ListResponse, RequestContext
@@ -54,7 +54,7 @@ class ProjectedDeviceListResponseModel(ListResponseModel[ProjectedDeviceData]):
     pass
 
 
-@router.post("", response_model=DeviceResponseModel)
+@router.post("", response_model=DeviceResponseModel, status_code=201)
 async def create_device(
     body: CreateDeviceBody,
     ctx: RequestContext = Depends(get_request_context),
@@ -75,8 +75,8 @@ async def create_device(
 
 @router.get("/projected", response_model=ProjectedDeviceListResponseModel)  # NEW
 async def list_devices_projected(  # NEW
-    limit: int = 50,  # NEW
-    offset: int = 0,  # NEW
+    limit: int = Query(default=50, ge=1, le=1000),  # NEW
+    offset: int = Query(default=0, ge=0),  # NEW
     ctx: RequestContext = Depends(get_request_context),  # NEW
     read_repo: DeviceReadRepository = Depends(get_device_read_repository),  # NEW
 ):  # NEW
@@ -114,8 +114,8 @@ async def get_device(
 
 @router.get("", response_model=DeviceListResponseModel)
 async def list_devices(
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
     ctx: RequestContext = Depends(get_request_context),
     service: DevicesApplicationService = Depends(get_devices_service),
 ):
@@ -145,7 +145,7 @@ async def list_devices(
     )
 
 
-@router.post("/{device_id}/retire", response_model=DeviceResponseModel)
+@router.post("/{device_id}/retire", response_model=DeviceResponseModel, status_code=200)
 async def retire_device(
     device_id: UUID,
     body: ChangeStatusBody,
@@ -167,7 +167,7 @@ async def retire_device(
     )
 
 
-@router.post("/{device_id}/activate", response_model=DeviceResponseModel)
+@router.post("/{device_id}/activate", response_model=DeviceResponseModel, status_code=200)
 async def activate_device(
     device_id: UUID,
     body: ChangeStatusBody,

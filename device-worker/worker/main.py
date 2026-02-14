@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import signal
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,9 @@ tenancy_breaker = CircuitBreaker(
     recovery_timeout=settings.cb_recovery_timeout,
     name="tenancy",
 )
+
+# ── Graceful shutdown flag ────────────────────────────────────────
+_shutdown_requested = False
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -85,13 +89,19 @@ async def handle_event(
 ) -> None:
     user_id = payload.get("user_id")
     if not user_id:
+        logger.warning("Event %s missing user_id, skipping", event_type)
+        return
+
+    device_id = payload.get("device_id")
+    if not device_id:
+        logger.warning("Event %s missing device_id, skipping", event_type)
         return
 
     if event_type == "device.retired":
-        saga = DeviceRetirementSaga(conn)
+        saga = DeviceRetirementSaga(conn, tenancy_breaker, email_breaker)
         await saga.start(
             tenant_id=tenant_id,
-            device_id=payload["device_id"],
+            device_id=device_id,
             user_id=user_id,
             reason=payload.get("reason", ""),
         )
@@ -122,76 +132,98 @@ async def poll_loop() -> None:
     max_attempts = settings.retry_max_attempts
     logger.info("Worker started, polling every %ds", settings.poll_interval_seconds)
 
-    while True:
-        async with engine.begin() as conn:
-            rows = await conn.execute(
-                text(
-                    """
-                    SELECT id, event_type, payload, attempts, tenant_id
-                    FROM outbox
-                    WHERE processed_at IS NULL
-                    ORDER BY created_at ASC
-                    LIMIT 10
-                    FOR UPDATE SKIP LOCKED
-                    """
+    try:
+        while not _shutdown_requested:
+            async with engine.begin() as conn:
+                rows = await conn.execute(
+                    text(
+                        """
+                        SELECT id, event_type, payload, attempts, tenant_id
+                        FROM outbox
+                        WHERE processed_at IS NULL
+                        ORDER BY created_at ASC
+                        LIMIT 10
+                        FOR UPDATE SKIP LOCKED
+                        """
+                    )
                 )
-            )
-            events = rows.fetchall()
+                events = rows.fetchall()
 
-            if events:
-                logger.info("Polled %d event(s) from outbox", len(events))
+                if events:
+                    logger.info("Polled %d event(s) from outbox", len(events))
 
-            for row in events:
-                attempts = int(row.attempts)
-                try:
-                    logger.info("Processing outbox id=%s event_type=%s", row.id, row.event_type)
-                    await handle_event(conn, row.event_type, row.payload, row.tenant_id)
-                    await project_event(conn, row.event_type, row.payload)
-                    await conn.execute(
-                        text(
-                            """
-                            UPDATE outbox
-                            SET processed_at = :now
-                            WHERE id = :id
-                            """
-                        ),
-                        {"id": row.id, "now": datetime.now(timezone.utc)},
-                    )
-                    logger.info("Outbox id=%s processed OK", row.id)
-                except CircuitOpenError as exc:
-                    logger.warning(
-                        "Outbox id=%s skipped — circuit open: %s",
-                        row.id, exc,
-                    )
-                except Exception as exc:
-                    attempts += 1
-                    delay = _backoff_delay(attempts)
-                    logger.warning(
-                        "Outbox id=%s failed (attempt %d/%d, next backoff %.1fs): %s",
-                        row.id, attempts, max_attempts, delay, exc,
-                    )
-                    await conn.execute(
-                        text(
-                            """
-                            UPDATE outbox
-                            SET attempts = :attempts, last_error = :err
-                            WHERE id = :id
-                            """
-                        ),
-                        {"id": row.id, "attempts": attempts, "err": str(exc)[:512]},
-                    )
-                    if attempts >= max_attempts:
-                        logger.error("Outbox id=%s dead-lettered after %d attempts", row.id, max_attempts)
+                for row in events:
+                    if _shutdown_requested:
+                        logger.info("Shutdown requested, stopping event processing")
+                        break
+
+                    attempts = int(row.attempts)
+                    try:
+                        logger.info("Processing outbox id=%s event_type=%s", row.id, row.event_type)
+                        await handle_event(conn, row.event_type, row.payload, row.tenant_id)
+                        await project_event(conn, row.event_type, row.payload, tenancy_breaker)
                         await conn.execute(
-                            text("UPDATE outbox SET processed_at = :now WHERE id = :id"),
+                            text(
+                                """
+                                UPDATE outbox
+                                SET processed_at = :now
+                                WHERE id = :id
+                                """
+                            ),
                             {"id": row.id, "now": datetime.now(timezone.utc)},
                         )
+                        logger.info("Outbox id=%s processed OK", row.id)
+                    except CircuitOpenError as exc:
+                        logger.warning(
+                            "Outbox id=%s skipped — circuit open: %s",
+                            row.id, exc,
+                        )
+                    except Exception as exc:
+                        attempts += 1
+                        delay = _backoff_delay(attempts)
+                        logger.warning(
+                            "Outbox id=%s failed (attempt %d/%d, next backoff %.1fs): %s",
+                            row.id, attempts, max_attempts, delay, exc,
+                        )
+                        await conn.execute(
+                            text(
+                                """
+                                UPDATE outbox
+                                SET attempts = :attempts, last_error = :err
+                                WHERE id = :id
+                                """
+                            ),
+                            {"id": row.id, "attempts": attempts, "err": str(exc)[:512]},
+                        )
+                        if attempts >= max_attempts:
+                            logger.error("Outbox id=%s dead-lettered after %d attempts", row.id, max_attempts)
+                            await conn.execute(
+                                text("UPDATE outbox SET processed_at = :now WHERE id = :id"),
+                                {"id": row.id, "now": datetime.now(timezone.utc)},
+                            )
 
-        await asyncio.sleep(settings.poll_interval_seconds)
+            await asyncio.sleep(settings.poll_interval_seconds)
+    finally:
+        logger.info("Disposing database engine")
+        await engine.dispose()
+        logger.info("Worker stopped")
 
 
 def main() -> None:
-    asyncio.run(poll_loop())
+    loop = asyncio.new_event_loop()
+
+    def _handle_signal() -> None:
+        global _shutdown_requested
+        logger.info("Received shutdown signal, draining...")
+        _shutdown_requested = True
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal)
+
+    try:
+        loop.run_until_complete(poll_loop())
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
 import { useParams } from "react-router-dom";
@@ -11,6 +12,7 @@ const schema = z.object({
 export function DeviceDetailPage() {
   const { deviceId } = useParams();
   const { request } = useApi();
+  const [formError, setFormError] = useState<string | null>(null);
 
   const deviceQuery = useQuery({
     queryKey: ["device", deviceId],
@@ -30,8 +32,36 @@ export function DeviceDetailPage() {
           }),
         }
       ),
-    onSuccess: () => deviceQuery.refetch(),
+    onSuccess: () => {
+      setFormError(null);
+      deviceQuery.refetch();
+    },
+    onError: (err: Error) => {
+      setFormError(err.message);
+    },
   });
+
+  function handleSubmit(action: "retire" | "activate", formData: FormData) {
+    setFormError(null);
+    try {
+      const input = schema.parse({
+        reason: String(formData.get("reason") ?? ""),
+      });
+      mutateStatus.mutate({ action, reason: input.reason });
+    } catch {
+      setFormError("Reason is required");
+    }
+  }
+
+  if (deviceQuery.isError) {
+    return (
+      <div className="mx-auto max-w-2xl p-6">
+        <p className="text-red-600">
+          Failed to load device: {deviceQuery.error?.message ?? "Unknown error"}
+        </p>
+      </div>
+    );
+  }
 
   const device = deviceQuery.data?.data;
 
@@ -58,15 +88,15 @@ export function DeviceDetailPage() {
         <div>{device.version}</div>
       </div>
 
+      {formError && (
+        <p className="mt-4 text-sm text-red-600">{formError}</p>
+      )}
+
       <form
         className="mt-6 flex gap-3"
         onSubmit={(e) => {
           e.preventDefault();
-          const form = new FormData(e.currentTarget);
-          const input = schema.parse({
-            reason: String(form.get("reason") ?? ""),
-          });
-          mutateStatus.mutate({ action: "retire", reason: input.reason });
+          handleSubmit("retire", new FormData(e.currentTarget));
         }}
       >
         <input
@@ -76,7 +106,7 @@ export function DeviceDetailPage() {
         />
         <button
           type="submit"
-          disabled={isRetired}
+          disabled={isRetired || mutateStatus.isPending}
           className="rounded bg-red-600 px-4 py-2 text-white disabled:opacity-50"
         >
           Retire
@@ -87,11 +117,7 @@ export function DeviceDetailPage() {
         className="mt-3 flex gap-3"
         onSubmit={(e) => {
           e.preventDefault();
-          const form = new FormData(e.currentTarget);
-          const input = schema.parse({
-            reason: String(form.get("reason") ?? ""),
-          });
-          mutateStatus.mutate({ action: "activate", reason: input.reason });
+          handleSubmit("activate", new FormData(e.currentTarget));
         }}
       >
         <input
@@ -101,7 +127,7 @@ export function DeviceDetailPage() {
         />
         <button
           type="submit"
-          disabled={isActive}
+          disabled={isActive || mutateStatus.isPending}
           className="rounded bg-green-600 px-4 py-2 text-white disabled:opacity-50"
         >
           Activate

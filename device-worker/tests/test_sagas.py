@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from worker.circuit_breaker import CircuitBreaker
 from worker.sagas import DeviceRetirementSaga
 
 TENANT = uuid4()
@@ -21,6 +22,13 @@ def _mock_conn():
     return conn
 
 
+def _mock_breakers():
+    """Create test circuit breakers that pass through calls."""
+    tenancy = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, name="tenancy-test")
+    email = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, name="email-test")
+    return tenancy, email
+
+
 def _mock_httpx_response(status_code=200, json_data=None):
     resp = MagicMock()
     resp.status_code = status_code
@@ -31,14 +39,22 @@ def _mock_httpx_response(status_code=200, json_data=None):
     return resp
 
 
+def _setup_mock_client(mock_http_client_fn):
+    """Configure _http_client mock to return an async context manager with a mock client."""
+    mock_client = AsyncMock()
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=mock_client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    mock_http_client_fn.return_value = cm
+    return mock_client
+
+
 class TestDeviceRetirementSaga:
     @pytest.mark.asyncio
-    @patch("worker.sagas.httpx.AsyncClient")
-    async def test_successful_saga(self, mock_client_cls):
+    @patch("worker.sagas._http_client")
+    async def test_successful_saga(self, mock_http_client_fn):
         conn = _mock_conn()
-        mock_client = AsyncMock()
-        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _setup_mock_client(mock_http_client_fn)
 
         # First call: resolve email
         mock_client.get.return_value = _mock_httpx_response(
@@ -47,7 +63,8 @@ class TestDeviceRetirementSaga:
         # Second call: send email
         mock_client.post.return_value = _mock_httpx_response(200)
 
-        saga = DeviceRetirementSaga(conn)
+        tenancy_breaker, email_breaker = _mock_breakers()
+        saga = DeviceRetirementSaga(conn, tenancy_breaker, email_breaker)
         await saga.start(
             tenant_id=TENANT,
             device_id=DEVICE_ID,
@@ -66,12 +83,10 @@ class TestDeviceRetirementSaga:
         assert params["status"] == "completed"
 
     @pytest.mark.asyncio
-    @patch("worker.sagas.httpx.AsyncClient")
-    async def test_notify_failure_triggers_compensation(self, mock_client_cls):
+    @patch("worker.sagas._http_client")
+    async def test_notify_failure_triggers_compensation(self, mock_http_client_fn):
         conn = _mock_conn()
-        mock_client = AsyncMock()
-        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _setup_mock_client(mock_http_client_fn)
 
         # Email resolution fails
         mock_client.get.return_value = _mock_httpx_response(500)
@@ -79,7 +94,8 @@ class TestDeviceRetirementSaga:
         # Compensation call succeeds
         mock_client.post.return_value = _mock_httpx_response(200)
 
-        saga = DeviceRetirementSaga(conn)
+        tenancy_breaker, email_breaker = _mock_breakers()
+        saga = DeviceRetirementSaga(conn, tenancy_breaker, email_breaker)
         await saga.start(
             tenant_id=TENANT,
             device_id=DEVICE_ID,
@@ -97,12 +113,10 @@ class TestDeviceRetirementSaga:
         assert "compensated" in statuses
 
     @pytest.mark.asyncio
-    @patch("worker.sagas.httpx.AsyncClient")
-    async def test_compensation_failure_results_in_failed(self, mock_client_cls):
+    @patch("worker.sagas._http_client")
+    async def test_compensation_failure_results_in_failed(self, mock_http_client_fn):
         conn = _mock_conn()
-        mock_client = AsyncMock()
-        mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _setup_mock_client(mock_http_client_fn)
 
         # Email resolution fails
         mock_client.get.return_value = _mock_httpx_response(500)
@@ -110,7 +124,8 @@ class TestDeviceRetirementSaga:
         # Compensation also fails
         mock_client.post.side_effect = Exception("Network error")
 
-        saga = DeviceRetirementSaga(conn)
+        tenancy_breaker, email_breaker = _mock_breakers()
+        saga = DeviceRetirementSaga(conn, tenancy_breaker, email_breaker)
         await saga.start(
             tenant_id=TENANT,
             device_id=DEVICE_ID,

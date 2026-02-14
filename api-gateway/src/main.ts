@@ -11,11 +11,16 @@ const app = new Hono();
 app.use(
   "*", // this should be restricted to allowed domains
   cors({
-    origin: ["http://localhost:5173"],
+    origin: settings.corsOrigins,
     allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
   })
 );
+
+app.onError((err, c) => {
+  console.error("[gateway] unhandled error:", err);
+  return c.json({ error: "internal server error" }, 500);
+});
 
 app.route("/api/v1/devices", devicesRouter);
 app.route("/api/v1/tenants", tenantsRouter);

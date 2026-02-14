@@ -9,6 +9,7 @@ type EnvKey =
   | "TENANCY_SERVICE_TOKEN"
   | "DEVICE_SERVICE_URL"
   | "DEVICE_SERVICE_TOKEN"
+  | "CORS_ORIGINS"
   | "PROXY_TIMEOUT_MS";
 
 function requireEnv(key: EnvKey): string {
@@ -29,5 +30,8 @@ export const settings = {
   tenancyServiceToken: requireEnv("TENANCY_SERVICE_TOKEN"),
   deviceServiceUrl: requireEnv("DEVICE_SERVICE_URL"),
   deviceServiceToken: requireEnv("DEVICE_SERVICE_TOKEN"),
+  corsOrigins: optionalEnv("CORS_ORIGINS", "http://localhost:5173")
+    .split(",")
+    .map((o) => o.trim()),
   proxyTimeoutMs: Number(optionalEnv("PROXY_TIMEOUT_MS", "10000")),
 };

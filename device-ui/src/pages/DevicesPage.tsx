@@ -11,7 +11,7 @@ export function DevicesPage() {
   const { request } = useApi();
   const navigate = useNavigate();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ["devices", { limit, offset }],
     queryFn: () =>
       request<ListResponse<ProjectedDevice>>( // CHANGED
@@ -51,9 +51,21 @@ export function DevicesPage() {
             {isLoading && (
               <tr>
                 <td className="p-3" colSpan={7}>
-                  {" "}
-                  {/* CHANGED — was 6 */}
                   Loading...
+                </td>
+              </tr>
+            )}
+            {isError && (
+              <tr>
+                <td className="p-3 text-red-600" colSpan={7}>
+                  Failed to load devices: {error?.message ?? "Unknown error"}
+                </td>
+              </tr>
+            )}
+            {!isLoading && !isError && data?.data.length === 0 && (
+              <tr>
+                <td className="p-3 text-center text-gray-500" colSpan={7}>
+                  No devices yet. Click "Add device" to create one.
                 </td>
               </tr>
             )}

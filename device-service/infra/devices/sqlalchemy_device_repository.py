@@ -1,8 +1,10 @@
 from uuid import UUID
 
 from sqlalchemy import Select, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts import ConflictError
 from app.domain.devices import Device, DeviceStatus
 from app.devices.repository import DeviceRepository
 from infra.db.models import DeviceModel
@@ -24,7 +26,10 @@ class SqlAlchemyDeviceRepository(DeviceRepository):
 
     async def add(self, device: Device) -> None:
         self._session.add(self._to_model(device))
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except IntegrityError:
+            raise ConflictError("Device with this MAC address already exists")
 
     async def count_by_tenant(self, tenant_id: UUID) -> int:
         stmt = select(func.count()).select_from(DeviceModel).where(DeviceModel.tenant_id == tenant_id)
@@ -61,7 +66,6 @@ class SqlAlchemyDeviceRepository(DeviceRepository):
             .where(DeviceModel.version == expected_version)
             .values(
                 status=device.status.value,
-                mac_address=device.mac_address,
                 updated_at=device.updated_at,
                 version=expected_version + 1,
             )

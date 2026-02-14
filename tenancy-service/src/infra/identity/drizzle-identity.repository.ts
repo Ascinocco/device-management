@@ -11,6 +11,8 @@ import {
   users,
 } from "../db/schema";
 
+const AUTH_PROVIDER = "clerk" as const;
+
 export class DrizzleIdentityRepository implements IdentityRepository {
   async resolveIdentity(
     clerkUserId: string,
@@ -27,7 +29,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
         .from(tenantProviders)
         .where(
           and(
-            eq(tenantProviders.provider, "clerk"),
+            eq(tenantProviders.provider, AUTH_PROVIDER),
             eq(tenantProviders.providerOrgId, clerkOrgId),
           ),
         )
@@ -43,9 +45,12 @@ export class DrizzleIdentityRepository implements IdentityRepository {
             createdAt: new Date(),
           })
           .returning();
+        if (!created[0]) {
+          throw new Error("Failed to insert tenant");
+        }
         tenantId = created[0].id;
         await tx.insert(tenantProviders).values({
-          provider: "clerk",
+          provider: AUTH_PROVIDER,
           providerOrgId: clerkOrgId,
           tenantId,
         });
@@ -57,7 +62,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
         .from(authProviders)
         .where(
           and(
-            eq(authProviders.provider, "clerk"),
+            eq(authProviders.provider, AUTH_PROVIDER),
             eq(authProviders.providerUserId, clerkUserId),
           ),
         )
@@ -74,9 +79,12 @@ export class DrizzleIdentityRepository implements IdentityRepository {
             createdAt: new Date(),
           })
           .returning();
+        if (!created[0]) {
+          throw new Error("Failed to insert user");
+        }
         userId = created[0].id;
         await tx.insert(authProviders).values({
-          provider: "clerk",
+          provider: AUTH_PROVIDER,
           providerUserId: clerkUserId,
           userId,
         });
@@ -118,7 +126,7 @@ export class DrizzleIdentityRepository implements IdentityRepository {
       )
       .limit(1);
     const role = membership[0]?.role;
-    if (role != "owner") {
+    if (role !== "owner") {
       return false;
     }
     await db.update(tenants).set({ name }).where(eq(tenants.id, tenantId));
